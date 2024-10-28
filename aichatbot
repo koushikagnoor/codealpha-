@@ -1,0 +1,130 @@
+import opennlp.tools.doccat.*;
+import opennlp.tools.tokenize.*;
+import opennlp.tools.util.*;
+import weka.classifiers.Classifier;
+import weka.classifiers.bayes.NaiveBayes;
+import weka.core.*;
+import java.io.*;
+import java.util.*;
+
+public class Chatbot {
+    private static Tokenizer tokenizer;
+    private static DoccatModel intentModel;
+    private static Classifier intentClassifier;
+
+    // Predefined Responses
+    private static final Map<String, String> responses = Map.of(
+            "greeting", "Hello! How can I assist you today?",
+            "farewell", "Goodbye! Have a great day!",
+            "weather", "Today's weather is sunny with a high of 25°C.",
+            "unknown", "I'm sorry, I didn't quite understand that. Could you rephrase?"
+    );
+
+    public Chatbot() throws Exception {
+        // Load Tokenizer
+        InputStream tokenModelIn = getClass().getResourceAsStream("/en-token.bin");
+        TokenizerModel tokenModel = new TokenizerModel(tokenModelIn);
+        tokenizer = new TokenizerME(tokenModel);
+
+        // Load or Train Intent Model
+        trainIntentModel();
+
+        // Train or Load Classifier
+        trainIntentClassifier();
+    }
+
+    private void trainIntentModel() throws IOException {
+        InputStreamFactory dataIn = new MarkableFileInputStreamFactory(new File("intent-samples.txt"));
+        ObjectStream<String> lineStream = new PlainTextByLineStream(dataIn, "UTF-8");
+        ObjectStream<DocumentSample> sampleStream = new DocumentSampleStream(lineStream);
+
+        // Train the intent categorizer model
+        TrainingParameters params = new TrainingParameters();
+        params.put(TrainingParameters.ITERATIONS_PARAM, "100");
+        params.put(TrainingParameters.CUTOFF_PARAM, "1");
+        intentModel = DocumentCategorizerME.train("en", sampleStream, params, new DoccatFactory());
+    }
+
+    private void trainIntentClassifier() throws Exception {
+        // Sample dataset: create Instances and add Attributes for Weka NaiveBayes
+        ArrayList<Attribute> attributes = new ArrayList<>();
+        attributes.add(new Attribute("text", (ArrayList<String>) null));
+        List<String> classValues = Arrays.asList("greeting", "farewell", "weather", "unknown");
+        attributes.add(new Attribute("class", classValues));
+        Instances trainingData = new Instances("ChatbotTraining", attributes, 10);
+        trainingData.setClassIndex(1);
+
+        // Add some examples for training (For a real application, use a comprehensive dataset)
+        addInstance(trainingData, "Hello", "greeting");
+        addInstance(trainingData, "What's the weather?", "weather");
+        addInstance(trainingData, "Goodbye", "farewell");
+
+        intentClassifier = new NaiveBayes();
+        intentClassifier.buildClassifier(trainingData);
+    }
+
+    private void addInstance(Instances dataset, String text, String classLabel) {
+        Instance instance = new DenseInstance(2);
+        instance.setValue(dataset.attribute(0), text);
+        instance.setValue(dataset.attribute(1), classLabel);
+        dataset.add(instance);
+    }
+
+    public String getResponse(String userInput) {
+        try {
+            String intent = classifyIntent(userInput);
+            return responses.getOrDefault(intent, responses.get("unknown"));
+        } catch (Exception e) {
+            e.printStackTrace();
+            return "I'm having trouble understanding that.";
+        }
+    }
+
+    private String classifyIntent(String text) throws Exception {
+        String[] tokens = tokenizer.tokenize(text);
+        DocumentCategorizerME categorizer = new DocumentCategorizerME(intentModel);
+        double[] outcomes = categorizer.categorize(tokens);
+
+        String bestCategory = categorizer.getBestCategory(outcomes);
+
+        // Fallback on Weka classification if confidence is low (example threshold)
+        if (categorizer.getConfidence(outcomes) < 0.6) {
+            Instances instanceData = createInstance(text);
+            double labelIndex = intentClassifier.classifyInstance(instanceData.instance(0));
+            bestCategory = instanceData.classAttribute().value((int) labelIndex);
+        }
+        return bestCategory;
+    }
+
+    private Instances createInstance(String text) {
+        ArrayList<Attribute> attributes = new ArrayList<>();
+        attributes.add(new Attribute("text", (ArrayList<String>) null));
+        List<String> classValues = Arrays.asList("greeting", "farewell", "weather", "unknown");
+        attributes.add(new Attribute("class", classValues));
+
+        Instances instanceData = new Instances("Instance", attributes, 1);
+        instanceData.setClassIndex(1);
+
+        Instance instance = new DenseInstance(2);
+        instance.setValue(instanceData.attribute(0), text);
+        instanceData.add(instance);
+        return instanceData;
+    }
+
+    public static void main(String[] args) throws Exception {
+        Chatbot chatbot = new Chatbot();
+        Scanner scanner = new Scanner(System.in);
+
+        System.out.println("Welcome to Chatbot! Type 'exit' to end.");
+        while (true) {
+            System.out.print("\nYou: ");
+            String userInput = scanner.nextLine();
+            if (userInput.equalsIgnoreCase("exit")) break;
+
+            String response = chatbot.getResponse(userInput);
+            System.out.println("Bot: " + response);
+        }
+        scanner.close();
+        System.out.println("Chatbot session ended.");
+    }
+}
